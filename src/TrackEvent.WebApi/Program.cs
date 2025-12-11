@@ -3,6 +3,7 @@ using TrackEvent.WebApi.Handlers;
 using TrackEvent.WebApi.Infrastructure.Data;
 using TrackEvent.WebApi.Infrastructure.Repositories;
 using TrackEvent.WebApi.Middlewares;
+using DotNetEnv;
 
 namespace TrackEvent.WebApi;
 
@@ -10,6 +11,12 @@ public class Program
 {
     public static void Main(string[] args)
     {
+        // 載入 .env 檔案（如果存在），僅當帶有 --local 參數時
+        // if (args != null && Array.IndexOf(args, "--local") >= 0)
+        // {
+        //     Env.Load();
+        // }
+        Env.Load();
         var builder = WebApplication.CreateBuilder(args);
 
         // 設定 JSON 序列化選項（snake_case）
@@ -35,7 +42,8 @@ public class Program
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen(c =>
         {
-            c.SwaggerDoc("v1", new() {
+            c.SwaggerDoc("v1", new()
+            {
                 Title = "TrackEvent API",
                 Version = "v1",
                 Description = "使用者行為事件追蹤 API"

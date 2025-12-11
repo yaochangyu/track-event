@@ -87,6 +87,7 @@ dotnet run --project src/TrackEvent.WebApi
 ```
 
 API 將會在以下位置啟動：
+
 - HTTP: `http://localhost:5000`
 - HTTPS: `https://localhost:5001`
 - Swagger UI: `https://localhost:5001/swagger`
@@ -175,13 +176,16 @@ curl -X POST https://localhost:5001/api/v1/track/event \
 ## 資料庫 Schema
 
 詳細的資料庫 Schema 設計請參考：
+
 - [CLAUDE.md](./CLAUDE.md) - 完整設計規格書
 - [db/init-schema.sql](./db/init-schema.sql) - SQL Schema 腳本
 
 ### 主要資料表
 
 #### `user_events`
+
 儲存所有使用者事件（append-only），包含：
+
 - 身份識別（user_id, client_id, session_id）
 - 事件資訊（event_time, source, event_type, feature_id）
 - 場景上下文（page_url, screen_name）
@@ -192,52 +196,63 @@ curl -X POST https://localhost:5001/api/v1/track/event \
 ## 專案結構說明
 
 ### Domain 層
+
 - `UserEvent.cs`: 使用者事件實體，對應 `user_events` 資料表
 
 ### Contracts 層
+
 - `TrackEventRequest.cs`: 追蹤事件請求 DTO
 - `TrackEventResponse.cs`: 成功回應 DTO
 - `ErrorResponse.cs`: 錯誤回應 DTO
 
 ### Handlers 層
+
 - `TrackEventHandler.cs`: 處理追蹤事件的業務邏輯
-  - 實作 Result Pattern 進行錯誤處理
-  - 驗證必填欄位
-  - 產生唯一 EventId
-  - 將事件儲存至資料庫
+    - 實作 Result Pattern 進行錯誤處理
+    - 驗證必填欄位
+    - 產生唯一 EventId
+    - 將事件儲存至資料庫
 
 ### Infrastructure 層
+
 - `TrackEventDbContext.cs`: EF Core 資料庫上下文
 - `IUserEventRepository.cs`: 儲存庫介面
 - `UserEventRepository.cs`: 儲存庫實作
 
 ### Controllers 層
+
 - `TrackController.cs`: 追蹤事件 API 控制器
 
 ### Middlewares 層
+
 - `ExceptionHandlingMiddleware.cs`: 全域例外處理中介軟體
 
 ## 設計特色
 
 ### 1. Clean Architecture
+
 - 清晰的分層設計
 - 依賴倒置原則（DIP）
 - 關注點分離（SoC）
 
 ### 2. Result Pattern
+
 - 使用 Result<T> 模式進行錯誤處理
 - 避免使用例外處理業務邏輯錯誤
 - 提供更好的錯誤追蹤
 
 ### 3. Immutable Objects
+
 - 使用 C# record 定義不可變的 DTO
 - 確保資料一致性
 
 ### 4. 全域錯誤處理
+
 - Middleware 集中處理未預期的例外
 - 統一的錯誤回應格式
 
 ### 5. PostgreSQL JSONB
+
 - 彈性的 experiments 和 metadata 欄位
 - 支援未來擴充而不需修改 Schema
 

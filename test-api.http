@@ -1,0 +1,132 @@
+### TrackEvent API 測試
+
+#@baseUrl = https://localhost:5001
+ @baseUrl = http://localhost:5000
+
+### 1. 測試基本的事件追蹤（最小必填欄位）
+POST {{baseUrl}}/api/v1/track/event
+Content-Type: application/json
+
+{
+  "client_id": "c_test_001",
+  "session_id": "s_test_001",
+  "event_time": "2025-12-11T10:55:23Z",
+  "source": "web",
+  "event_type": "click",
+  "feature_id": "btn_test"
+}
+
+### 2. 測試完整的事件追蹤（Web 平台）
+POST {{baseUrl}}/api/v1/track/event
+Content-Type: application/json
+
+{
+  "user_id": "u_123456",
+  "anonymous_id": "anon_abcd1234",
+  "client_id": "c_browser_987654321",
+  "session_id": "s_20251211_0001",
+  "event_time": "2025-12-11T10:55:23Z",
+  "source": "web",
+  "event_type": "click",
+  "feature_id": "btn_export_report",
+  "feature_name": "export_report_button",
+  "feature_type": "button",
+  "action": "click",
+  "page_url": "https://example.com/dashboard/overview",
+  "page_name": "dashboard_overview",
+  "previous_page_url": "https://example.com/login",
+  "previous_page_name": "login_page",
+  "device_type": "desktop",
+  "os": "Windows",
+  "os_version": "11",
+  "browser": "Chrome",
+  "browser_version": "131.0.0.0",
+  "network_type": "wifi",
+  "locale": "zh-TW",
+  "experiments": {
+    "exp_new_onboarding": "variant_B",
+    "exp_pricing_layout": "control"
+  },
+  "metadata": {
+    "button_text": "匯出報表",
+    "position": "top_right",
+    "section": "summary_panel",
+    "plan_type": "pro",
+    "is_trial_user": true,
+    "extra": {
+      "report_type": "monthly",
+      "filter_applied": true
+    }
+  }
+}
+
+### 3. 測試 App 平台事件追蹤
+POST {{baseUrl}}/api/v1/track/event
+Content-Type: application/json
+
+{
+  "user_id": "u_789012",
+  "client_id": "c_iphone_12345",
+  "session_id": "s_mobile_001",
+  "event_time": "2025-12-11T11:30:00Z",
+  "source": "app_ios",
+  "event_type": "click",
+  "feature_id": "btn_share",
+  "feature_name": "share_button",
+  "feature_type": "button",
+  "action": "click",
+  "screen_name": "ProductDetailScreen",
+  "previous_screen_name": "ProductListScreen",
+  "device_type": "mobile",
+  "os": "iOS",
+  "os_version": "17.2",
+  "app_version": "2.5.0",
+  "build_number": "250",
+  "network_type": "4G",
+  "locale": "zh-TW",
+  "metadata": {
+    "product_id": "prod_12345",
+    "category": "electronics"
+  }
+}
+
+### 4. 測試匿名用戶事件
+POST {{baseUrl}}/api/v1/track/event
+Content-Type: application/json
+
+{
+  "anonymous_id": "anon_xyz789",
+  "client_id": "c_browser_anonymous",
+  "session_id": "s_anon_001",
+  "event_time": "2025-12-11T12:00:00Z",
+  "source": "web",
+  "event_type": "page_view",
+  "feature_id": "page_home",
+  "page_url": "https://example.com/",
+  "page_name": "home"
+}
+
+### 5. 測試缺少必填欄位（應該回傳 400 錯誤）
+POST {{baseUrl}}/api/v1/track/event
+Content-Type: application/json
+
+{
+  "user_id": "u_123456",
+  "event_time": "2025-12-11T10:55:23Z",
+  "source": "web",
+  "event_type": "click",
+  "feature_id": "btn_test"
+}
+
+### 6. 測試無效的時間格式（應該回傳 400 錯誤）
+POST {{baseUrl}}/api/v1/track/event
+Content-Type: application/json
+
+{
+  "client_id": "c_test_001",
+  "session_id": "s_test_001",
+  "event_time": "invalid-time",
+  "source": "web",
+  "event_type": "click",
+  "feature_id": "btn_test"
+}

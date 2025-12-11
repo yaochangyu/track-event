@@ -16,6 +16,7 @@ public class Program
         //     Env.Load();
         // }
         Env.Load();
+
         var builder = WebApplication.CreateBuilder(args);
 
         // 設定 JSON 序列化選項（snake_case）
@@ -26,8 +27,8 @@ public class Program
                     System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
             });
 
-        // 設定 Elasticsearch
-        var elasticsearchUrl = Environment.GetEnvironmentVariable("ELASTICSEARCH_URL") ?? "http://localhost:9200";
+        // 從 Configuration 讀取 Elasticsearch URL
+        var elasticsearchUrl = builder.Configuration.GetConnectionString("ElasticsearchUrl");
         var settings = new ElasticsearchClientSettings(new Uri(elasticsearchUrl))
             .DefaultIndex("user-events-write")
             .DisableDirectStreaming(); // 開發環境建議啟用，方便 debug

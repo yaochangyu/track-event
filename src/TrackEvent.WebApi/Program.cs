@@ -1,6 +1,5 @@
-using Microsoft.EntityFrameworkCore;
+using Elastic.Clients.Elasticsearch;
 using TrackEvent.WebApi.Handlers;
-using TrackEvent.WebApi.Infrastructure.Data;
 using TrackEvent.WebApi.Infrastructure.Repositories;
 using TrackEvent.WebApi.Middlewares;
 using DotNetEnv;
@@ -27,10 +26,13 @@ public class Program
                     System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
             });
 
-        // 設定 PostgreSQL
-        var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-        builder.Services.AddDbContext<TrackEventDbContext>(options =>
-            options.UseNpgsql(connectionString));
+        // 設定 Elasticsearch
+        var elasticsearchUrl = Environment.GetEnvironmentVariable("ELASTICSEARCH_URL") ?? "http://localhost:9200";
+        var settings = new ElasticsearchClientSettings(new Uri(elasticsearchUrl))
+            .DefaultIndex("user-events-write")
+            .DisableDirectStreaming(); // 開發環境建議啟用，方便 debug
+
+        builder.Services.AddSingleton(new ElasticsearchClient(settings));
 
         // 註冊 Repositories
         builder.Services.AddScoped<IUserEventRepository, UserEventRepository>();

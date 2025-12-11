@@ -1,17 +1,12 @@
 namespace TrackEvent.WebApi.Domain.Entities;
 
 /// <summary>
-/// 使用者事件實體 (對應 user_events 資料表)
+/// 使用者事件實體 (對應 Elasticsearch Document)
 /// </summary>
 public class UserEvent
 {
     /// <summary>
-    /// 主鍵
-    /// </summary>
-    public long Id { get; set; }
-
-    /// <summary>
-    /// 事件唯一識別碼 (對外使用)
+    /// 事件唯一識別碼 (對應 Elasticsearch _id)
     /// </summary>
     public string EventId { get; set; } = string.Empty;
 
@@ -153,14 +148,14 @@ public class UserEvent
 
     // ===== 實驗 / 附加資訊 =====
     /// <summary>
-    /// 實驗資訊 (JSONB)
+    /// 實驗資訊 (動態物件)
     /// </summary>
-    public string? Experiments { get; set; }
+    public object? Experiments { get; set; }
 
     /// <summary>
-    /// 彈性附加資訊 (JSONB)
+    /// 彈性附加資訊 (動態物件)
     /// </summary>
-    public string? Metadata { get; set; }
+    public object? Metadata { get; set; }
 
     // ===== 系統欄位 =====
     /// <summary>

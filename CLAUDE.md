@@ -1,9 +1,9 @@
 # 使用者行為事件追蹤設計規格書
-（API + PostgreSQL Schema）
+（API + Elasticsearch Schema）
 
-版本：v1  
-Endpoint：`POST /api/v1/track/event`  
-DB 主要表：`user_events`
+版本：v2
+Endpoint：`POST /api/v1/track/event`
+Elasticsearch Index：`user-events-*`（按日期輪轉）
 
 ---
 
@@ -15,7 +15,7 @@ DB 主要表：`user_events`
     - 漏斗分析
     - 留存分析
     - 多個 A/B Test 實驗分析
-- 後端儲存採 **Append-only event log**，使用 PostgreSQL。
+- 後端儲存採 **Append-only event log**，使用 **Elasticsearch**。
 
 特性：
 
@@ -314,199 +314,409 @@ Body 範例：
 
 ---
 
-## 3. PostgreSQL DB Schema 設計規則
+## 3. Elasticsearch Index 設計規則
 
-### 3.1 主事件表：`user_events`
+### 3.1 Index 命名與輪轉策略
 
-**用途**：儲存每一筆使用者事件（append-only）。
+**Index Pattern**：`user-events-YYYY.MM.DD`
 
-```sql
-CREATE TABLE user_events (
-    -- 主鍵與對外 ID
-    id              BIGSERIAL PRIMARY KEY,
-    event_id        VARCHAR(64) NOT NULL UNIQUE,
+範例：
+- `user-events-2025.12.11`
+- `user-events-2025.12.12`
 
-    -- 身份識別
-    user_id         VARCHAR(64),
-    anonymous_id    VARCHAR(128),
-    client_id       VARCHAR(128) NOT NULL,
-    session_id      VARCHAR(128) NOT NULL,
+**別名（Alias）策略**：
+- `user-events-write`：寫入別名，指向當前日期的索引
+- `user-events-read`：讀取別名，指向所有歷史索引（`user-events-*`）
 
-    -- 事件核心資訊
-    event_time      TIMESTAMPTZ NOT NULL,
-    source          VARCHAR(32) NOT NULL,
-    event_type      VARCHAR(32) NOT NULL,
-
-    -- 功能與行為資訊
-    feature_id      VARCHAR(128) NOT NULL,
-    feature_name    VARCHAR(256),
-    feature_type    VARCHAR(64),
-    action          VARCHAR(64),
-
-    -- 場景上下文 (Web)
-    page_url            TEXT,
-    page_name           VARCHAR(256),
-    previous_page_url   TEXT,
-    previous_page_name  VARCHAR(256),
-
-    -- 場景上下文 (App)
-    screen_name         VARCHAR(256),
-    previous_screen_name VARCHAR(256),
-
-    -- 環境資訊
-    device_type     VARCHAR(32),
-    os              VARCHAR(64),
-    os_version      VARCHAR(64),
-    browser         VARCHAR(64),
-    browser_version VARCHAR(64),
-    app_version     VARCHAR(64),
-    build_number    VARCHAR(64),
-    network_type    VARCHAR(32),
-    locale          VARCHAR(16),
-
-    -- 實驗 / 附加資訊
-    experiments     JSONB,
-    metadata        JSONB,
-
-    -- 系統欄位
-    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-#### 3.1.1 DB 欄位與 API 欄位對應
-
-- `event_id`：由後端產生（可為 GUID 或自訂字串，回傳至 API 客戶端）。
-- `event_time`：對應 Request 的 `event_time`（UTC）。
-- `received_at`：寫入時的伺服器時間。
-- `experiments`：對應 Request 的 `experiments` 物件。
-- `metadata`：對應 Request 的 `metadata` 物件。
-
-#### 3.1.2 非空限制對應 API 必填策略
-
-- `client_id`：`NOT NULL`，API 必填。
-- `session_id`：`NOT NULL`，API 必填。
-- `event_time`：`NOT NULL`，API 必填。
-- `source`：`NOT NULL`，API 必填。
-- `event_type`：`NOT NULL`，API 必填。
-- `feature_id`：`NOT NULL`，API 必填。
+**Index Lifecycle Management (ILM)**：
+- **Hot Phase**（0-7天）：最新數據，高頻查詢與寫入
+- **Warm Phase**（8-30天）：降低副本數，減少資源消耗
+- **Cold Phase**（31-90天）：移至低成本儲存，查詢頻率低
+- **Delete Phase**（91天後）：依據資料保留政策刪除
 
 ---
 
-### 3.2 索引設計
+### 3.2 Index Mapping 定義
 
-針對常用查詢維度設計索引：
+**用途**：定義事件文檔結構與欄位型別。
 
-```sql
--- 時間排序 / 篩選
-CREATE INDEX idx_user_events_event_time
-    ON user_events (event_time DESC);
+```json
+{
+  "mappings": {
+    "properties": {
+      "event_id": {
+        "type": "keyword"
+      },
 
--- 功能使用分析：某功能在一段時間的使用
-CREATE INDEX idx_user_events_feature_time
-    ON user_events (feature_id, event_time DESC);
+      "_comment_identity": "身份識別欄位",
+      "user_id": {
+        "type": "keyword"
+      },
+      "anonymous_id": {
+        "type": "keyword"
+      },
+      "client_id": {
+        "type": "keyword"
+      },
+      "session_id": {
+        "type": "keyword"
+      },
 
--- 用戶留存與行為路徑
-CREATE INDEX idx_user_events_user_time
-    ON user_events (user_id, event_time DESC);
+      "_comment_event_core": "事件核心資訊",
+      "event_time": {
+        "type": "date",
+        "format": "strict_date_optional_time||epoch_millis"
+      },
+      "source": {
+        "type": "keyword"
+      },
+      "event_type": {
+        "type": "keyword"
+      },
 
--- 裝置與 Session 分析
-CREATE INDEX idx_user_events_client_session_time
-    ON user_events (client_id, session_id, event_time DESC);
+      "_comment_feature": "功能與行為資訊",
+      "feature_id": {
+        "type": "keyword"
+      },
+      "feature_name": {
+        "type": "keyword"
+      },
+      "feature_type": {
+        "type": "keyword"
+      },
+      "action": {
+        "type": "keyword"
+      },
 
--- 來源平台過濾
-CREATE INDEX idx_user_events_source_time
-    ON user_events (source, event_time DESC);
+      "_comment_context_web": "場景上下文 (Web)",
+      "page_url": {
+        "type": "keyword",
+        "fields": {
+          "text": {
+            "type": "text"
+          }
+        }
+      },
+      "page_name": {
+        "type": "keyword"
+      },
+      "previous_page_url": {
+        "type": "keyword"
+      },
+      "previous_page_name": {
+        "type": "keyword"
+      },
 
--- 實驗分群分析：指定實驗 key
-CREATE INDEX idx_user_events_exp_new_onboarding
-    ON user_events ((experiments->>'exp_new_onboarding'));
+      "_comment_context_app": "場景上下文 (App)",
+      "screen_name": {
+        "type": "keyword"
+      },
+      "previous_screen_name": {
+        "type": "keyword"
+      },
 
--- metadata 中常用欄位 (如 plan_type)
-CREATE INDEX idx_user_events_metadata_plan_type
-    ON user_events ((metadata->>'plan_type'));
+      "_comment_environment": "環境資訊",
+      "device_type": {
+        "type": "keyword"
+      },
+      "os": {
+        "type": "keyword"
+      },
+      "os_version": {
+        "type": "keyword"
+      },
+      "browser": {
+        "type": "keyword"
+      },
+      "browser_version": {
+        "type": "keyword"
+      },
+      "app_version": {
+        "type": "keyword"
+      },
+      "build_number": {
+        "type": "keyword"
+      },
+      "network_type": {
+        "type": "keyword"
+      },
+      "locale": {
+        "type": "keyword"
+      },
+
+      "_comment_experiments": "實驗資訊",
+      "experiments": {
+        "type": "object",
+        "dynamic": true
+      },
+
+      "_comment_metadata": "彈性附加資訊",
+      "metadata": {
+        "type": "object",
+        "dynamic": true
+      },
+
+      "_comment_system": "系統欄位",
+      "received_at": {
+        "type": "date",
+        "format": "strict_date_optional_time||epoch_millis"
+      }
+    }
+  },
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "refresh_interval": "5s",
+    "index.codec": "best_compression"
+  }
+}
 ```
 
-實務建議：
+#### 3.2.1 欄位型別說明
 
-- 索引數量需衡量：多索引會影響寫入效能與磁碟空間。
-- 先針對「時間 + 功能 + 用戶 + source」建立索引，再依實際報表需求追加 jsonb 索引。
+| Elasticsearch 型別 | 用途 | 範例欄位 |
+|-------------------|------|---------|
+| `keyword` | 精確匹配、聚合、排序 | `user_id`, `feature_id`, `source` |
+| `text` | 全文搜索（分詞） | `page_url.text` |
+| `date` | 時間範圍查詢、排序 | `event_time`, `received_at` |
+| `object` | 巢狀 JSON 物件（扁平化） | `experiments`, `metadata` |
 
----
+#### 3.2.2 Multi-field 策略
 
-### 3.3 選配維度表設計
-
-#### 3.3.1 功能維度表：`features`
-
-```sql
-CREATE TABLE features (
-    feature_id      VARCHAR(128) PRIMARY KEY,
-    name            VARCHAR(256),
-    type            VARCHAR(64),
-    description     TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    is_active       BOOLEAN NOT NULL DEFAULT TRUE
-);
+```json
+"page_url": {
+  "type": "keyword",
+  "fields": {
+    "text": {
+      "type": "text"
+    }
+  }
+}
 ```
 
 用途：
-
-- 對 `feature_id` 進行集中管理（名稱、類型、說明）。
-- 報表前端可 join 該表獲取完整功能資訊。
-
----
-
-#### 3.3.2 實驗維度表（選配）：`experiments`
-
-```sql
-CREATE TABLE experiments (
-    experiment_key  VARCHAR(128) PRIMARY KEY,
-    name            VARCHAR(256),
-    description     TEXT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    is_active       BOOLEAN NOT NULL DEFAULT TRUE
-);
-```
-
-用途：
-
-- 集中管理實驗清單與說明。
-- 與 `user_events.experiments` 為邏輯關聯，不強制外鍵以避免寫入成本增加。
+- `page_url`（keyword）：精確匹配、聚合
+- `page_url.text`（text）：全文搜索（例如搜尋 URL 中包含 "dashboard" 的事件）
 
 ---
 
-### 3.4 時間與 Partition 策略（建議）
+### 3.3 Index Template 設定
 
-- 所有時間欄位以 UTC 儲存（`TIMESTAMPTZ`）。
-- 未來事件量大時，建議用 **時間分區**（例如按月）：
+**用途**：自動為新建的 `user-events-*` 索引套用 mapping 與 settings。
 
-```sql
--- 示例：建立分區表骨幹
-CREATE TABLE user_events_partitioned (
-    LIKE user_events INCLUDING ALL
-) PARTITION BY RANGE (event_time);
-```
-
-後續每月建立子分區：
-
-```sql
-CREATE TABLE user_events_2025_12 PARTITION OF user_events_partitioned
-FOR VALUES FROM ('2025-12-01') TO ('2026-01-01');
+```json
+{
+  "index_patterns": ["user-events-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 3,
+      "number_of_replicas": 1,
+      "refresh_interval": "5s",
+      "index.codec": "best_compression",
+      "index.lifecycle.name": "user-events-policy",
+      "index.lifecycle.rollover_alias": "user-events-write"
+    },
+    "mappings": {
+      "properties": {
+        "event_id": { "type": "keyword" },
+        "user_id": { "type": "keyword" },
+        "anonymous_id": { "type": "keyword" },
+        "client_id": { "type": "keyword" },
+        "session_id": { "type": "keyword" },
+        "event_time": {
+          "type": "date",
+          "format": "strict_date_optional_time||epoch_millis"
+        },
+        "source": { "type": "keyword" },
+        "event_type": { "type": "keyword" },
+        "feature_id": { "type": "keyword" },
+        "feature_name": { "type": "keyword" },
+        "feature_type": { "type": "keyword" },
+        "action": { "type": "keyword" },
+        "page_url": {
+          "type": "keyword",
+          "fields": { "text": { "type": "text" } }
+        },
+        "page_name": { "type": "keyword" },
+        "previous_page_url": { "type": "keyword" },
+        "previous_page_name": { "type": "keyword" },
+        "screen_name": { "type": "keyword" },
+        "previous_screen_name": { "type": "keyword" },
+        "device_type": { "type": "keyword" },
+        "os": { "type": "keyword" },
+        "os_version": { "type": "keyword" },
+        "browser": { "type": "keyword" },
+        "browser_version": { "type": "keyword" },
+        "app_version": { "type": "keyword" },
+        "build_number": { "type": "keyword" },
+        "network_type": { "type": "keyword" },
+        "locale": { "type": "keyword" },
+        "experiments": {
+          "type": "object",
+          "dynamic": true
+        },
+        "metadata": {
+          "type": "object",
+          "dynamic": true
+        },
+        "received_at": {
+          "type": "date",
+          "format": "strict_date_optional_time||epoch_millis"
+        }
+      }
+    },
+    "aliases": {
+      "user-events-read": {}
+    }
+  },
+  "priority": 500,
+  "version": 1
+}
 ```
 
 ---
 
-## 4. API 與 DB 的整體規則與實務建議
+### 3.4 Index Lifecycle Policy
+
+**用途**：自動管理索引的生命週期（輪轉、遷移、刪除）。
+
+```json
+{
+  "policy": {
+    "phases": {
+      "hot": {
+        "min_age": "0ms",
+        "actions": {
+          "rollover": {
+            "max_primary_shard_size": "50GB",
+            "max_age": "1d"
+          },
+          "set_priority": {
+            "priority": 100
+          }
+        }
+      },
+      "warm": {
+        "min_age": "7d",
+        "actions": {
+          "shrink": {
+            "number_of_shards": 1
+          },
+          "forcemerge": {
+            "max_num_segments": 1
+          },
+          "set_priority": {
+            "priority": 50
+          }
+        }
+      },
+      "cold": {
+        "min_age": "30d",
+        "actions": {
+          "searchable_snapshot": {
+            "snapshot_repository": "cold-repository"
+          },
+          "set_priority": {
+            "priority": 0
+          }
+        }
+      },
+      "delete": {
+        "min_age": "90d",
+        "actions": {
+          "delete": {}
+        }
+      }
+    }
+  }
+}
+```
+
+#### 3.4.1 Policy 階段說明
+
+| Phase | 時間 | 動作 | 用途 |
+|-------|------|------|------|
+| Hot | 0-7天 | Rollover（每日或 50GB）| 活躍寫入與查詢 |
+| Warm | 7-30天 | Shrink（縮減分片）、Forcemerge | 減少資源消耗 |
+| Cold | 30-90天 | Searchable Snapshot | 低成本儲存 |
+| Delete | 90天+ | 刪除索引 | 清理過期數據 |
+
+---
+
+### 3.5 維度資料管理（選配）
+
+由於 Elasticsearch 不支援 JOIN，維度資料可採用以下策略：
+
+#### 3.5.1 策略一：獨立索引 + 應用層 Join
+
+**功能維度索引**：`features`
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "feature_id": { "type": "keyword" },
+      "name": { "type": "text" },
+      "type": { "type": "keyword" },
+      "description": { "type": "text" },
+      "created_at": { "type": "date" },
+      "is_active": { "type": "boolean" }
+    }
+  }
+}
+```
+
+**實驗維度索引**：`experiments`
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "experiment_key": { "type": "keyword" },
+      "name": { "type": "text" },
+      "description": { "type": "text" },
+      "created_at": { "type": "date" },
+      "is_active": { "type": "boolean" }
+    }
+  }
+}
+```
+
+#### 3.5.2 策略二：Denormalization（推薦）
+
+在寫入事件時，直接將功能名稱、實驗說明等資訊嵌入事件文檔：
+
+```json
+{
+  "feature_id": "btn_export_report",
+  "feature_name": "export_report_button",
+  "feature_type": "button",
+  "feature_description": "匯出報表按鈕（在儀表板右上角）"
+}
+```
+
+優點：
+- 查詢效能佳（無需 JOIN）
+- 簡化查詢邏輯
+
+缺點：
+- 資料冗余
+- 維度資訊更新需要重新索引事件（建議維度資訊穩定後再嵌入）
+
+---
+
+## 4. API 與 Elasticsearch 的整體規則與實務建議
 
 ### 4.1 時間規則
 
-- `event_time`（Request）與 `received_at`（DB/Response）：
+- `event_time`（Request）與 `received_at`（Elasticsearch Document）：
     - 一律使用 UTC。
-    - 格式：ISO 8601（例如 \[2025-12-11T10:55:23Z\]）。
+    - 格式：ISO 8601（例如 `2025-12-11T10:55:23Z`）。
     - 時區轉換放在報表與分析層處理。
 
-### 4.2 必填欄位策略（API + DB）
+### 4.2 必填欄位策略（API + Elasticsearch）
 
-最低要求（API 必填 + DB `NOT NULL`）：
+最低要求（API 必填）：
 
 - `client_id`
 - `session_id`
@@ -536,29 +746,291 @@ FOR VALUES FROM ('2025-12-01') TO ('2026-01-01');
 
 - 前端在 session 開始時就決定好每個實驗的分流，整個 session 都使用同一組 `experiments`。
 - 所有事件都附上 `experiments`，減少後端拼接成本。
-- 常用實驗 key 可建立 jsonb 索引，提升 variant 分群分析效率。
+- Elasticsearch 的 `object` 型別支援動態欄位，可直接對 `experiments.exp_new_onboarding` 進行聚合分析。
 
 ### 4.5 metadata 的演進策略
 
 - 初期：大量資訊先進 `metadata`，快速上線。
 - 收集一段時間後：
     - 觀察報表最常用的 metadata 欄位（如 `plan_type`, `is_trial_user`）。
-    - 逐步拉成頂層欄位或獨立維度表，保留原欄位在 metadata 中以相容舊資料。
+    - 逐步拉成頂層欄位（透過 Index Template 更新 mapping），保留原欄位在 metadata 中以相容舊資料。
 
 ### 4.6 擴充：批次 API（未來）
 
-目前：`POST /api/v1/track/event` （單筆）
+目前：`POST /api/v1/track/event`（單筆）
 
 未來如需批量追蹤：
 
 - 新增：`POST /api/v1/track/events/batch`
 - Request：`[{...TrackEventRequest}, {...}, ...]`
-- DB：仍寫入 `user_events`，可使用 bulk insert 提升效能。
+- Elasticsearch：使用 **Bulk API** 批次寫入，提升吞吐量。
+
+範例：
+
+```json
+POST /_bulk
+{ "index": { "_index": "user-events-write" } }
+{ "event_id": "evt_001", "user_id": "u_123", ... }
+{ "index": { "_index": "user-events-write" } }
+{ "event_id": "evt_002", "user_id": "u_456", ... }
+```
+
+---
+
+### 4.7 常見查詢與聚合範例
+
+#### 4.7.1 功能使用熱度分析
+
+**查詢**：過去 7 天各功能的點擊次數（Top 10）
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "event_time": {
+              "gte": "now-7d/d",
+              "lt": "now/d"
+            }
+          }
+        },
+        {
+          "term": {
+            "event_type": "click"
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "top_features": {
+      "terms": {
+        "field": "feature_id",
+        "size": 10
+      }
+    }
+  }
+}
+```
+
+---
+
+#### 4.7.2 漏斗分析
+
+**查詢**：某個 session 中的事件序列（依時間排序）
+
+```json
+GET /user-events-read/_search
+{
+  "query": {
+    "term": {
+      "session_id": "s_20251211_0001"
+    }
+  },
+  "sort": [
+    {
+      "event_time": {
+        "order": "asc"
+      }
+    }
+  ],
+  "_source": ["event_time", "feature_id", "page_name"]
+}
+```
+
+**進階**：計算從「登入頁」→「儀表板」→「匯出報表」的轉換率
+
+使用 **Pipeline Aggregation** 或在應用層處理事件序列。
+
+---
+
+#### 4.7.3 留存分析
+
+**查詢**：2025-12-01 新增用戶，在 12-08 有活動的用戶數（7日留存）
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "range": {
+            "event_time": {
+              "gte": "2025-12-08T00:00:00Z",
+              "lt": "2025-12-09T00:00:00Z"
+            }
+          }
+        }
+      ],
+      "filter": [
+        {
+          "terms": {
+            "user_id": [
+              "u_001",
+              "u_002",
+              "u_003"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "retained_users": {
+      "cardinality": {
+        "field": "user_id"
+      }
+    }
+  }
+}
+```
+
+備註：新增用戶清單需從其他來源（如用戶註冊表）取得，或透過事件時間推算首次活動日期。
+
+---
+
+#### 4.7.4 A/B Test 實驗分析
+
+**查詢**：`exp_new_onboarding` 各 variant 的事件數
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "range": {
+      "event_time": {
+        "gte": "now-7d/d",
+        "lt": "now/d"
+      }
+    }
+  },
+  "aggs": {
+    "by_variant": {
+      "terms": {
+        "field": "experiments.exp_new_onboarding"
+      },
+      "aggs": {
+        "feature_clicks": {
+          "terms": {
+            "field": "feature_id",
+            "size": 5
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+#### 4.7.5 metadata 自訂欄位分析
+
+**查詢**：Pro 方案用戶的功能使用分佈
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "metadata.plan_type": "pro"
+          }
+        },
+        {
+          "range": {
+            "event_time": {
+              "gte": "now-30d/d"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "feature_usage": {
+      "terms": {
+        "field": "feature_id",
+        "size": 20
+      }
+    }
+  }
+}
+```
+
+---
+
+### 4.8 效能優化建議
+
+#### 4.8.1 寫入效能
+
+- 使用 **Bulk API** 批次寫入（建議每批 500-1000 筆）
+- 調整 `refresh_interval`（預設 5s，可視需求調整為 10s 或 30s）
+- 適當的 shard 數量（建議單 shard 不超過 50GB）
+
+#### 4.8.2 查詢效能
+
+- 使用 **Filter Context** 而非 Query Context（不計分，可快取）
+- 限制聚合的 bucket 數量（避免記憶體溢位）
+- 使用 `_source` 過濾，只返回需要的欄位
+- 對於時間範圍查詢，使用 `now-7d/d` 這類對齊邊界的語法（利於快取）
+
+#### 4.8.3 儲存優化
+
+- 使用 `best_compression` codec（節省 20-30% 儲存空間）
+- 定期執行 `forcemerge`（Warm Phase）
+- 使用 ILM 自動移至冷儲存（Searchable Snapshot）
+
+---
+
+### 4.9 與現有系統整合
+
+#### 4.9.1 ASP.NET Core 整合
+
+使用 **Elastic.Clients.Elasticsearch** 套件：
+
+```bash
+dotnet add package Elastic.Clients.Elasticsearch
+```
+
+範例程式碼片段：
+
+```csharp
+var settings = new ElasticsearchClientSettings(new Uri("http://localhost:9200"))
+    .DefaultIndex("user-events-write");
+
+var client = new ElasticsearchClient(settings);
+
+// 寫入事件
+var response = await client.IndexAsync(eventDocument, idx => idx
+    .Index("user-events-write"));
+```
+
+#### 4.9.2 資料遷移策略（PostgreSQL → Elasticsearch）
+
+若從 PostgreSQL 遷移：
+
+1. **雙寫階段**：同時寫入 PostgreSQL 與 Elasticsearch
+2. **歷史資料遷移**：使用 Logstash 或自訂 ETL 工具
+3. **驗證階段**：比對兩邊資料一致性
+4. **切換階段**：將查詢流量切至 Elasticsearch
+5. **淘汰階段**：停止寫入 PostgreSQL（保留歷史資料或歸檔）
 
 ---
 
 若你接下來需要，我可以基於這份規格，再幫你產出：
 
 - 對應的 **OpenAPI/Swagger YAML** 範本
-- ASP.NET Core Controller + EF Core Entity 的示範程式碼
-- 常見分析 SQL 範例（例如：某功能一週點擊數、實驗 variant 的轉換率查詢）
+- ASP.NET Core Controller + Elasticsearch Client 的示範程式碼
+- Kibana Dashboard 設定範例（視覺化分析儀表板）
+- Docker Compose 本地開發環境配置

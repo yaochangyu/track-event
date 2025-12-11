@@ -1,23 +1,42 @@
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: track_event_db
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: track-event-elasticsearch
     environment:
-      POSTGRES_DB: track_event
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=zh_TW.UTF-8"
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
-      - "5432:5432"
+      - "9200:9200"
+      - "9300:9300"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - track-event-network
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
       retries: 5
 
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: track-event-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - I18N_LOCALE=zh-TW
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - track-event-network
+
 volumes:
-  postgres_data:
+  es_data:
+    driver: local
+
+networks:
+  track-event-network:
+    driver: bridge

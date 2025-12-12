@@ -1,6 +1,6 @@
 # TrackEvent Web API
 
-使用者行為事件追蹤系統 - 基於 ASP.NET Core 9.0 與 PostgreSQL
+使用者行為事件追蹤系統 - 基於 ASP.NET Core 9.0 與 Elasticsearch
 
 ## 專案說明
 
@@ -14,8 +14,8 @@
 ## 技術堆疊
 
 - **框架**: ASP.NET Core 9.0
-- **資料庫**: PostgreSQL 14+
-- **ORM**: Entity Framework Core 9.0
+- **資料庫**: Elasticsearch 8.x+
+- **客戶端**: Elastic.Clients.Elasticsearch
 - **API 文件**: Swagger/OpenAPI
 
 ## 架構設計
@@ -24,15 +24,14 @@
 
 ```
 TrackEvent.WebApi/
-├── Domain/              # 領域層 - 實體和值物件
+├── Domain/              # 領域層 - 實體
 │   └── Entities/
 ├── Contracts/           # 契約層 - DTOs、Request/Response
 │   ├── Requests/
 │   └── Responses/
 ├── Handlers/            # 處理器層 - 業務邏輯
 ├── Infrastructure/      # 基礎設施層 - 資料存取
-│   ├── Data/           # DbContext
-│   └── Repositories/   # 儲存庫
+│   └── Repositories/   # 儲存庫 (Elasticsearch)
 ├── Controllers/         # 控制器層 - API 端點
 └── Middlewares/         # 中介軟體 - 全域處理
 ```
@@ -42,27 +41,20 @@ TrackEvent.WebApi/
 ### 1. 環境需求
 
 - .NET 9.0 SDK
-- PostgreSQL 14+
-- (選用) Docker & Docker Compose
+- Docker & Docker Compose
 
-### 2. 資料庫設定
+### 2. Elasticsearch 設定
 
-#### 方式一：使用 PostgreSQL
-
-```bash
-# 1. 建立資料庫
-createdb track_event
-
-# 2. 執行 Schema 腳本
-psql -d track_event -f db/init-schema.sql
-```
-
-#### 方式二：使用 Docker Compose（推薦）
+本專案使用 Docker Compose 啟動 Elasticsearch 和 Kibana。
 
 ```bash
-# 啟動 PostgreSQL 容器
+# 啟動 Elasticsearch 和 Kibana 容器
 docker-compose up -d
 ```
+- Elasticsearch 將運行於 `http://localhost:9200`
+- Kibana 將運行於 `http://localhost:5601`
+
+更多手動設定細節，請參考 [ELASTICSEARCH_SETUP.md](./ELASTICSEARCH_SETUP.md)。
 
 ### 3. 設定連線字串
 
@@ -70,8 +62,8 @@ docker-compose up -d
 
 ```json
 {
-  "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=track_event;Username=postgres;Password=postgres"
+  "Elasticsearch": {
+    "Uri": "http://localhost:9200"
   }
 }
 ```
@@ -173,99 +165,80 @@ curl -X POST https://localhost:5001/api/v1/track/event \
   }'
 ```
 
-## 資料庫 Schema
+## Elasticsearch 設計
 
-詳細的資料庫 Schema 設計請參考：
+詳細的 Index Mapping、Lifecycle Policy (ILM) 與查詢策略，請參考：
 
 - [CLAUDE.md](./CLAUDE.md) - 完整設計規格書
-- [db/init-schema.sql](./db/init-schema.sql) - SQL Schema 腳本
 
-### 主要資料表
+### 主要設計
 
-#### `user_events`
-
-儲存所有使用者事件（append-only），包含：
-
-- 身份識別（user_id, client_id, session_id）
-- 事件資訊（event_time, source, event_type, feature_id）
-- 場景上下文（page_url, screen_name）
-- 環境資訊（device_type, os, browser）
-- 實驗資訊（experiments - JSONB）
-- 附加資訊（metadata - JSONB）
+- **Index Pattern**: `user-events-YYYY.MM.DD`，每日輪轉。
+- **Write Alias**: `user-events-write`，寫入時指向當前的索引。
+- **Read Alias**: `user-events-read`，讀取時涵蓋所有相關索引。
+- **Index Template**: 自動為新索引套用 Mapping 和 Settings。
+- **ILM**: 自動管理 Hot/Warm/Cold/Delete 階段。
+- **Mapping**: 使用 `keyword` 進行精確匹配與聚合，`object` 處理彈性欄位。
 
 ## 專案結構說明
 
 ### Domain 層
 
-- `UserEvent.cs`: 使用者事件實體，對應 `user_events` 資料表
+- `UserEvent.cs`: 使用者事件實體，對應 Elasticsearch document。
 
 ### Contracts 層
 
-- `TrackEventRequest.cs`: 追蹤事件請求 DTO
-- `TrackEventResponse.cs`: 成功回應 DTO
-- `ErrorResponse.cs`: 錯誤回應 DTO
+- `TrackEventRequest.cs`: 追蹤事件請求 DTO。
+- `TrackEventResponse.cs`: 成功回應 DTO。
+- `ErrorResponse.cs`: 錯誤回應 DTO。
 
 ### Handlers 層
 
-- `TrackEventHandler.cs`: 處理追蹤事件的業務邏輯
-    - 實作 Result Pattern 進行錯誤處理
-    - 驗證必填欄位
-    - 產生唯一 EventId
-    - 將事件儲存至資料庫
+- `TrackEventHandler.cs`: 處理追蹤事件的業務邏輯，並將事件寫入 Elasticsearch。
 
 ### Infrastructure 層
 
-- `TrackEventDbContext.cs`: EF Core 資料庫上下文
-- `IUserEventRepository.cs`: 儲存庫介面
-- `UserEventRepository.cs`: 儲存庫實作
+- `IUserEventRepository.cs`: 儲存庫介面。
+- `UserEventRepository.cs`: 使用 `Elastic.Clients.Elasticsearch` 與 Elasticsearch 互動的儲存庫實作。
 
 ### Controllers 層
 
-- `TrackController.cs`: 追蹤事件 API 控制器
+- `TrackController.cs`: 追蹤事件 API 控制器。
 
 ### Middlewares 層
 
-- `ExceptionHandlingMiddleware.cs`: 全域例外處理中介軟體
+- `ExceptionHandlingMiddleware.cs`: 全域例外處理中介軟體。
 
 ## 設計特色
 
 ### 1. Clean Architecture
 
-- 清晰的分層設計
-- 依賴倒置原則（DIP）
-- 關注點分離（SoC）
+- 清晰的分層設計，將業務邏輯與基礎設施分離。
+- 依賴倒置原則（DIP）。
 
 ### 2. Result Pattern
 
-- 使用 Result<T> 模式進行錯誤處理
-- 避免使用例外處理業務邏輯錯誤
-- 提供更好的錯誤追蹤
+- 使用 `Result<T>` 模式進行錯誤處理，避免使用例外處理業務邏輯錯誤。
 
 ### 3. Immutable Objects
 
-- 使用 C# record 定義不可變的 DTO
-- 確保資料一致性
+- 使用 C# record 定義不可變的 DTO，確保資料在傳遞過程中的一致性。
 
-### 4. 全域錯誤處理
+### 4. Elasticsearch 整合
 
-- Middleware 集中處理未預期的例外
-- 統一的錯誤回應格式
-
-### 5. PostgreSQL JSONB
-
-- 彈性的 experiments 和 metadata 欄位
-- 支援未來擴充而不需修改 Schema
+- 利用 Elasticsearch 的 `keyword` 型別進行高效能聚合分析。
+- `object` 型別提供 `experiments` 和 `metadata` 欄位的極高擴充彈性。
+- 透過 Index Template 與 ILM 實現自動化的索引生命週期管理。
 
 ## 後續開發建議
 
 - [ ] 加入 FluentValidation 進行更完整的驗證
 - [ ] 實作批次追蹤 API (`POST /api/v1/track/events/batch`)
-- [ ] 加入 Redis 快取層
 - [ ] 實作 API Key 認證
-- [ ] 加入 Serilog 結構化日誌
+- [ ] 加入 Serilog 結構化日誌，並輸出到 Elasticsearch
 - [ ] 撰寫單元測試和整合測試
 - [ ] 實作 Rate Limiting
-- [ ] 加入 Health Check endpoint
+- [ ] 加入 Health Check endpoint，檢查與 Elasticsearch 的連線狀態
 - [ ] 建立 Docker 映像檔
 - [ ] 設定 CI/CD Pipeline
 

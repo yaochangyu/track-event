@@ -50,6 +50,8 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 
 #### 2.2.1 Request 範例
 
+**範例一：功能點擊事件（Click Event）**
+
 ````markdown
 {
   "user_id": "u_123456",
@@ -103,6 +105,48 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 }
 ````
 
+**範例二：頁面離開事件（Page Leave Event）- 包含停留時間**
+
+````markdown
+{
+  "user_id": "u_123456",
+  "anonymous_id": "anon_abcd1234",
+  "client_id": "c_browser_987654321",
+  "session_id": "s_20251211_0001",
+
+  "event_time": "2025-12-11T10:58:45Z",
+  "source": "web",
+  "event_type": "page_leave",
+
+  "page_url": "https://example.com/dashboard/overview",
+  "page_name": "dashboard_overview",
+  "previous_page_url": "https://example.com/login",
+  "previous_page_name": "login_page",
+
+  "duration_ms": 202000,
+  "is_active_duration": true,
+  "visibility_changes": 2,
+
+  "device_type": "desktop",
+  "os": "Windows",
+  "os_version": "11",
+  "browser": "Chrome",
+  "browser_version": "131.0.0.0",
+  "network_type": "wifi",
+  "locale": "zh-TW",
+
+  "experiments": {
+    "exp_new_onboarding": "variant_B",
+    "exp_pricing_layout": "control"
+  },
+
+  "metadata": {
+    "plan_type": "pro",
+    "is_trial_user": true
+  }
+}
+````
+
 > 不適用的欄位，可為 `null` 或直接不傳，由 API 驗證策略決定。
 
 ---
@@ -135,7 +179,7 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 |------------|--------|------|------|
 | event_time | string | 是   | ISO8601 UTC，例如 \[2025-12-11T10:55:23Z\]。 |
 | source     | string | 是   | `"web"`, `"app_ios"`, `"app_android"`。 |
-| event_type | string | 是   | 事件類型，如 `"click"`, `"page_view"`, `"screen_view"`, `"submit"`。目前以 `"click"` 為主。 |
+| event_type | string | 是   | 事件類型，如 `"click"`, `"page_view"`, `"page_leave"`, `"screen_view"`, `"submit"`。主要類型：`"click"` 功能點擊、`"page_view"` 頁面進入、`"page_leave"` 頁面離開。 |
 
 ---
 
@@ -165,6 +209,9 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 | page_name          | string | 否   | 當前頁邏輯名稱，如 `"dashboard_overview"`。 |
 | previous_page_url  | string | 否   | 上一頁 URL（referrer）。 |
 | previous_page_name | string | 否   | 上一頁邏輯名稱，如 `"login_page"`。 |
+| duration_ms        | number | 否   | 頁面停留時間（毫秒）。僅在 `event_type = "page_leave"` 時提供。 |
+| is_active_duration | boolean | 否  | 是否為有效停留時間（排除分頁未激活時間）。預設 false。 |
+| visibility_changes | number | 否   | 頁面可見性變化次數（從隱藏到可見的次數）。 |
 
 **App**
 
@@ -406,6 +453,15 @@ Body 範例：
       "previous_page_name": {
         "type": "keyword"
       },
+      "duration_ms": {
+        "type": "long"
+      },
+      "is_active_duration": {
+        "type": "boolean"
+      },
+      "visibility_changes": {
+        "type": "integer"
+      },
 
       "_comment_context_app": "場景上下文 (App)",
       "screen_name": {
@@ -479,6 +535,9 @@ Body 範例：
 | `keyword` | 精確匹配、聚合、排序 | `user_id`, `feature_id`, `source` |
 | `text` | 全文搜索（分詞） | `page_url.text` |
 | `date` | 時間範圍查詢、排序 | `event_time`, `received_at` |
+| `long` | 大數值（整數），適合統計分析 | `duration_ms` |
+| `integer` | 一般整數 | `visibility_changes` |
+| `boolean` | 布林值 | `is_active_duration` |
 | `object` | 巢狀 JSON 物件（扁平化） | `experiments`, `metadata` |
 
 #### 3.2.2 Multi-field 策略
@@ -540,6 +599,9 @@ Body 範例：
         "page_name": { "type": "keyword" },
         "previous_page_url": { "type": "keyword" },
         "previous_page_name": { "type": "keyword" },
+        "duration_ms": { "type": "long" },
+        "is_active_duration": { "type": "boolean" },
+        "visibility_changes": { "type": "integer" },
         "screen_name": { "type": "keyword" },
         "previous_screen_name": { "type": "keyword" },
         "device_type": { "type": "keyword" },
@@ -970,6 +1032,171 @@ GET /user-events-read/_search
 
 ---
 
+#### 4.7.6 頁面停留時間分析
+
+**查詢**：過去 7 天各頁面的平均停留時間（Top 10）
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "event_type": "page_leave"
+          }
+        },
+        {
+          "range": {
+            "event_time": {
+              "gte": "now-7d/d",
+              "lt": "now/d"
+            }
+          }
+        },
+        {
+          "range": {
+            "duration_ms": {
+              "gte": 1000,
+              "lte": 3600000
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "by_page": {
+      "terms": {
+        "field": "page_name",
+        "size": 10,
+        "order": {
+          "avg_duration": "desc"
+        }
+      },
+      "aggs": {
+        "avg_duration": {
+          "avg": {
+            "field": "duration_ms"
+          }
+        },
+        "median_duration": {
+          "percentiles": {
+            "field": "duration_ms",
+            "percents": [50]
+          }
+        },
+        "total_views": {
+          "value_count": {
+            "field": "duration_ms"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**查詢**：停留時間分佈（Histogram）- 分析用戶在特定頁面的停留時間分佈
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "event_type": "page_leave"
+          }
+        },
+        {
+          "term": {
+            "page_name": "dashboard_overview"
+          }
+        },
+        {
+          "range": {
+            "event_time": {
+              "gte": "now-30d/d"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "duration_distribution": {
+      "histogram": {
+        "field": "duration_ms",
+        "interval": 30000,
+        "min_doc_count": 1
+      }
+    },
+    "stats": {
+      "stats": {
+        "field": "duration_ms"
+      }
+    }
+  }
+}
+```
+
+**查詢**：比較有效停留 vs 總停留時間
+
+```json
+GET /user-events-read/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "event_type": "page_leave"
+          }
+        },
+        {
+          "range": {
+            "event_time": {
+              "gte": "now-7d/d"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "active_vs_total": {
+      "filters": {
+        "filters": {
+          "active_duration": {
+            "term": {
+              "is_active_duration": true
+            }
+          },
+          "total_duration": {
+            "match_all": {}
+          }
+        }
+      },
+      "aggs": {
+        "avg_duration": {
+          "avg": {
+            "field": "duration_ms"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
 ### 4.8 效能優化建議
 
 #### 4.8.1 寫入效能
@@ -1025,6 +1252,192 @@ var response = await client.IndexAsync(eventDocument, idx => idx
 3. **驗證階段**：比對兩邊資料一致性
 4. **切換階段**：將查詢流量切至 Elasticsearch
 5. **淘汰階段**：停止寫入 PostgreSQL（保留歷史資料或歸檔）
+
+#### 4.9.3 前端頁面停留時間追蹤實作
+
+**使用 Page Visibility API 追蹤有效停留時間**
+
+```javascript
+class PageDurationTracker {
+  constructor() {
+    this.pageEnterTime = Date.now();
+    this.activeTime = 0;
+    this.lastVisibleTime = Date.now();
+    this.visibilityChanges = 0;
+    this.isTracking = false;
+
+    this.init();
+  }
+
+  init() {
+    // 監聽頁面可見性變化
+    document.addEventListener('visibilitychange', () => {
+      this.handleVisibilityChange();
+    });
+
+    // 頁面離開時發送事件
+    window.addEventListener('beforeunload', () => {
+      this.sendPageLeaveEvent();
+    });
+
+    // SPA 路由變化時（以 React Router 為例）
+    // 需要在路由變化時手動呼叫 sendPageLeaveEvent()
+
+    this.isTracking = true;
+  }
+
+  handleVisibilityChange() {
+    if (document.hidden) {
+      // 頁面隱藏時，累加活躍時間
+      this.activeTime += Date.now() - this.lastVisibleTime;
+    } else {
+      // 頁面可見時，記錄時間並增加變化次數
+      this.lastVisibleTime = Date.now();
+      this.visibilityChanges++;
+    }
+  }
+
+  sendPageLeaveEvent() {
+    if (!this.isTracking) return;
+
+    // 計算最後一段活躍時間
+    if (!document.hidden) {
+      this.activeTime += Date.now() - this.lastVisibleTime;
+    }
+
+    const durationMs = Date.now() - this.pageEnterTime;
+
+    // 過濾異常值：小於 1 秒或大於 1 小時
+    if (durationMs < 1000 || durationMs > 3600000) {
+      return;
+    }
+
+    const eventData = {
+      client_id: this.getClientId(),
+      session_id: this.getSessionId(),
+      event_time: new Date().toISOString(),
+      source: "web",
+      event_type: "page_leave",
+
+      page_url: window.location.href,
+      page_name: this.getPageName(),
+
+      duration_ms: durationMs,
+      is_active_duration: true,
+      visibility_changes: this.visibilityChanges,
+
+      // ... 其他必填欄位
+    };
+
+    // 使用 sendBeacon 確保在頁面關閉時也能送出
+    const blob = new Blob([JSON.stringify(eventData)], {
+      type: 'application/json'
+    });
+
+    navigator.sendBeacon('/api/v1/track/event', blob);
+
+    this.isTracking = false;
+  }
+
+  getClientId() {
+    // 從 cookie 或 localStorage 取得
+    return localStorage.getItem('client_id') || this.generateClientId();
+  }
+
+  getSessionId() {
+    // 從 sessionStorage 取得
+    return sessionStorage.getItem('session_id') || this.generateSessionId();
+  }
+
+  getPageName() {
+    // 根據路由或頁面標題決定
+    return document.querySelector('[data-page-name]')?.dataset.pageName
+      || window.location.pathname.replace(/\//g, '_');
+  }
+
+  generateClientId() {
+    const id = 'c_' + Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('client_id', id);
+    return id;
+  }
+
+  generateSessionId() {
+    const id = 's_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+    sessionStorage.setItem('session_id', id);
+    return id;
+  }
+}
+
+// 初始化追蹤器
+const tracker = new PageDurationTracker();
+```
+
+**SPA 應用整合範例（React）**
+
+```javascript
+import { useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
+
+function usePageTracking() {
+  const location = useLocation();
+  const trackerRef = useRef(null);
+
+  useEffect(() => {
+    // 路由變化時，先發送上一頁的 page_leave 事件
+    if (trackerRef.current) {
+      trackerRef.current.sendPageLeaveEvent();
+    }
+
+    // 初始化新頁面的追蹤器
+    trackerRef.current = new PageDurationTracker();
+
+    // 發送 page_view 事件
+    sendPageViewEvent({
+      page_url: window.location.href,
+      page_name: location.pathname,
+      // ... 其他欄位
+    });
+
+    return () => {
+      // 清理
+      if (trackerRef.current) {
+        trackerRef.current.sendPageLeaveEvent();
+      }
+    };
+  }, [location]);
+}
+
+// 在 App 組件中使用
+function App() {
+  usePageTracking();
+
+  return (
+    // ... your app
+  );
+}
+```
+
+**注意事項**
+
+1. **精確度問題**：
+   - `beforeunload` 事件在某些情況下可能不會觸發（例如強制關閉瀏覽器）
+   - 使用 `navigator.sendBeacon()` 提高資料發送成功率
+   - SPA 需要監聽路由變化，手動觸發 page_leave 事件
+
+2. **異常值處理**：
+   - 過短停留（< 1 秒）：可能是誤點或跳出
+   - 過長停留（> 1 小時）：可能是忘記關閉分頁
+   - 建議在前端先過濾，在後端分析時再次過濾
+
+3. **效能考量**：
+   - 不要在每次可見性變化時都發送 API 請求
+   - 只在 page_leave 時統一發送
+   - 使用 `sendBeacon` 避免阻塞頁面關閉
+
+4. **隱私考量**：
+   - 遵守 GDPR 等隱私法規
+   - 提供使用者選擇退出追蹤的機制
+   - 不追蹤敏感頁面（如支付頁面）的詳細停留時間
 
 ---
 

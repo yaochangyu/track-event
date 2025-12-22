@@ -54,6 +54,7 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 
 ````markdown
 {
+  "product_id": "prd_main",
   "user_id": "u_123456",
   "anonymous_id": "anon_abcd1234",
   "client_id": "c_browser_987654321",
@@ -109,6 +110,7 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 
 ````markdown
 {
+  "product_id": "prd_main",
   "user_id": "u_123456",
   "anonymous_id": "anon_abcd1234",
   "client_id": "c_browser_987654321",
@@ -157,6 +159,7 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
 
 | 欄位名稱     | 型別   | 必填 | 說明 |
 |--------------|--------|------|------|
+| product_id   | string | 是   | 產品/系統識別碼（多產品用）。建議穩定不變，如 `prd_main`、`prd_pos`。 |
 | user_id      | string | 否   | 已登入用戶 ID。匿名事件可不傳或為 null。 |
 | anonymous_id | string | 否   | 匿名用戶 ID（cookie/device 產生）。用於未登入追蹤。 |
 | client_id    | string | 是   | 裝置或瀏覽器實體 ID。Web=Cookie；App=Device ID/UUID。 |
@@ -396,6 +399,9 @@ Body 範例：
       },
 
       "_comment_identity": "身份識別欄位",
+      "product_id": {
+        "type": "keyword"
+      },
       "user_id": {
         "type": "keyword"
       },
@@ -578,6 +584,7 @@ Body 範例：
     "mappings": {
       "properties": {
         "event_id": { "type": "keyword" },
+        "product_id": { "type": "keyword" },
         "user_id": { "type": "keyword" },
         "anonymous_id": { "type": "keyword" },
         "client_id": { "type": "keyword" },
@@ -780,6 +787,7 @@ Body 範例：
 
 最低要求（API 必填）：
 
+- `product_id`
 - `client_id`
 - `session_id`
 - `event_time`

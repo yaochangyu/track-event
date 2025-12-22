@@ -1439,6 +1439,541 @@ function App() {
    - 提供使用者選擇退出追蹤的機制
    - 不追蹤敏感頁面（如支付頁面）的詳細停留時間
 
+#### 4.9.4 前端追蹤 SDK 完整實作
+
+**設計原則**
+
+1. **一次初始化，到處使用**：單例模式，全域可用
+2. **自動處理身份識別**：client_id、session_id 自動管理
+3. **簡潔的 API**：提供語意化的方法名稱
+4. **支援 TypeScript**：完整的型別定義
+5. **錯誤處理與重試機制**：使用 sendBeacon 確保資料送達
+
+**核心 Tracker SDK**
+
+```typescript
+// tracker.ts
+interface TrackEventPayload {
+  // 身份識別（自動填入）
+  user_id?: string;
+  anonymous_id?: string;
+  client_id: string;
+  session_id: string;
+
+  // 事件核心
+  event_time: string;
+  source: string;
+  event_type: string;
+
+  // 功能資訊
+  feature_id?: string;
+  feature_name?: string;
+  feature_type?: string;
+  action?: string;
+
+  // 場景上下文
+  page_url?: string;
+  page_name?: string;
+  previous_page_url?: string;
+  previous_page_name?: string;
+  duration_ms?: number;
+  is_active_duration?: boolean;
+  visibility_changes?: number;
+
+  // 環境資訊（自動填入）
+  device_type?: string;
+  os?: string;
+  os_version?: string;
+  browser?: string;
+  browser_version?: string;
+  network_type?: string;
+  locale?: string;
+
+  // 實驗與 metadata
+  experiments?: Record<string, string>;
+  metadata?: Record<string, any>;
+}
+
+interface TrackerConfig {
+  apiEndpoint?: string;
+  userId?: string;
+  debug?: boolean;
+  autoTrackPageView?: boolean;
+  autoTrackPageLeave?: boolean;
+}
+
+class EventTracker {
+  private config: TrackerConfig;
+  private clientId: string;
+  private sessionId: string;
+  private previousPageUrl: string | null = null;
+  private previousPageName: string | null = null;
+  private pageEnterTime: number = 0;
+  private activeTime: number = 0;
+  private lastVisibleTime: number = 0;
+  private visibilityChanges: number = 0;
+  private isTracking: boolean = false;
+
+  constructor(config: TrackerConfig = {}) {
+    this.config = {
+      apiEndpoint: '/api/v1/track/event',
+      debug: false,
+      autoTrackPageView: true,
+      autoTrackPageLeave: true,
+      ...config,
+    };
+
+    this.clientId = this.getOrCreateClientId();
+    this.sessionId = this.getOrCreateSessionId();
+
+    if (this.config.autoTrackPageView) {
+      this.trackPageView();
+    }
+
+    if (this.config.autoTrackPageLeave) {
+      this.initPageLeaveTracking();
+    }
+  }
+
+  // ==================== 公開 API ====================
+
+  /**
+   * 追蹤功能點擊
+   */
+  trackClick(featureId: string, options: {
+    featureName?: string;
+    featureType?: string;
+    metadata?: Record<string, any>;
+  } = {}) {
+    return this.track({
+      event_type: 'click',
+      feature_id: featureId,
+      feature_name: options.featureName,
+      feature_type: options.featureType || 'button',
+      action: 'click',
+      metadata: options.metadata,
+    });
+  }
+
+  /**
+   * 追蹤頁面瀏覽
+   */
+  trackPageView(pageName?: string) {
+    const currentUrl = window.location.href;
+    const currentPageName = pageName || this.getPageName();
+
+    this.track({
+      event_type: 'page_view',
+      page_url: currentUrl,
+      page_name: currentPageName,
+      previous_page_url: this.previousPageUrl,
+      previous_page_name: this.previousPageName,
+    });
+
+    this.previousPageUrl = currentUrl;
+    this.previousPageName = currentPageName;
+    this.pageEnterTime = Date.now();
+    this.activeTime = 0;
+    this.lastVisibleTime = Date.now();
+    this.visibilityChanges = 0;
+  }
+
+  /**
+   * 追蹤自訂事件
+   */
+  track(event: Partial<TrackEventPayload>) {
+    const payload = this.buildPayload(event);
+
+    if (this.config.debug) {
+      console.log('[Tracker] Event:', payload);
+    }
+
+    return this.send(payload);
+  }
+
+  /**
+   * 設定使用者 ID（登入後呼叫）
+   */
+  setUserId(userId: string) {
+    this.config.userId = userId;
+  }
+
+  /**
+   * 設定實驗分組
+   */
+  setExperiments(experiments: Record<string, string>) {
+    sessionStorage.setItem('experiments', JSON.stringify(experiments));
+  }
+
+  // ==================== 私有方法 ====================
+
+  private buildPayload(event: Partial<TrackEventPayload>): TrackEventPayload {
+    const experiments = this.getExperiments();
+    const envInfo = this.getEnvironmentInfo();
+
+    return {
+      user_id: this.config.userId,
+      client_id: this.clientId,
+      session_id: this.sessionId,
+      event_time: new Date().toISOString(),
+      source: 'web',
+      ...envInfo,
+      experiments: experiments || undefined,
+      page_url: event.page_url || window.location.href,
+      page_name: event.page_name || this.getPageName(),
+      ...event,
+    } as TrackEventPayload;
+  }
+
+  private send(payload: TrackEventPayload): Promise<void> {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([JSON.stringify(payload)], {
+        type: 'application/json',
+      });
+      const success = navigator.sendBeacon(this.config.apiEndpoint!, blob);
+
+      if (success) {
+        return Promise.resolve();
+      }
+    }
+
+    return fetch(this.config.apiEndpoint!, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+      })
+      .catch(error => {
+        if (this.config.debug) {
+          console.error('[Tracker] Failed to send event:', error);
+        }
+      });
+  }
+
+  private initPageLeaveTracking() {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.activeTime += Date.now() - this.lastVisibleTime;
+      } else {
+        this.lastVisibleTime = Date.now();
+        this.visibilityChanges++;
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      this.trackPageLeave();
+    });
+
+    this.isTracking = true;
+  }
+
+  private trackPageLeave() {
+    if (!this.isTracking || this.pageEnterTime === 0) return;
+
+    if (!document.hidden) {
+      this.activeTime += Date.now() - this.lastVisibleTime;
+    }
+
+    const durationMs = Date.now() - this.pageEnterTime;
+
+    if (durationMs < 1000 || durationMs > 3600000) {
+      return;
+    }
+
+    this.track({
+      event_type: 'page_leave',
+      duration_ms: durationMs,
+      is_active_duration: true,
+      visibility_changes: this.visibilityChanges,
+    });
+  }
+
+  // ==================== 輔助方法 ====================
+
+  private getOrCreateClientId(): string {
+    let clientId = localStorage.getItem('_tracker_client_id');
+    if (!clientId) {
+      clientId = 'c_' + this.generateId();
+      localStorage.setItem('_tracker_client_id', clientId);
+    }
+    return clientId;
+  }
+
+  private getOrCreateSessionId(): string {
+    let sessionId = sessionStorage.getItem('_tracker_session_id');
+    if (!sessionId) {
+      sessionId = 's_' + Date.now() + '_' + this.generateId();
+      sessionStorage.setItem('_tracker_session_id', sessionId);
+    }
+    return sessionId;
+  }
+
+  private generateId(): string {
+    return Math.random().toString(36).substr(2, 9);
+  }
+
+  private getPageName(): string {
+    const pageNameEl = document.querySelector('[data-page-name]');
+    if (pageNameEl) {
+      return (pageNameEl as HTMLElement).dataset.pageName || '';
+    }
+    return window.location.pathname.replace(/\//g, '_').replace(/^_/, '') || 'home';
+  }
+
+  private getExperiments(): Record<string, string> | null {
+    const stored = sessionStorage.getItem('experiments');
+    return stored ? JSON.parse(stored) : null;
+  }
+
+  private getEnvironmentInfo() {
+    const ua = navigator.userAgent;
+
+    return {
+      device_type: this.getDeviceType(),
+      browser: this.getBrowser(ua),
+      browser_version: this.getBrowserVersion(ua),
+      os: this.getOS(ua),
+      locale: navigator.language,
+      network_type: this.getNetworkType(),
+    };
+  }
+
+  private getDeviceType(): string {
+    const ua = navigator.userAgent;
+    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) {
+      return 'tablet';
+    }
+    if (/Mobile|Android|iP(hone|od)|IEMobile|BlackBerry|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(ua)) {
+      return 'mobile';
+    }
+    return 'desktop';
+  }
+
+  private getBrowser(ua: string): string {
+    if (ua.includes('Chrome')) return 'Chrome';
+    if (ua.includes('Safari')) return 'Safari';
+    if (ua.includes('Firefox')) return 'Firefox';
+    if (ua.includes('Edge')) return 'Edge';
+    return 'Unknown';
+  }
+
+  private getBrowserVersion(ua: string): string {
+    const match = ua.match(/(Chrome|Safari|Firefox|Edge)\/(\d+\.\d+)/);
+    return match ? match[2] : 'Unknown';
+  }
+
+  private getOS(ua: string): string {
+    if (ua.includes('Windows')) return 'Windows';
+    if (ua.includes('Mac')) return 'macOS';
+    if (ua.includes('Linux')) return 'Linux';
+    if (ua.includes('Android')) return 'Android';
+    if (ua.includes('iOS') || ua.includes('iPhone') || ua.includes('iPad')) return 'iOS';
+    return 'Unknown';
+  }
+
+  private getNetworkType(): string {
+    const connection = (navigator as any).connection
+      || (navigator as any).mozConnection
+      || (navigator as any).webkitConnection;
+
+    return connection?.effectiveType || 'unknown';
+  }
+}
+
+// 匯出單例
+export const tracker = new EventTracker();
+export default EventTracker;
+```
+
+**使用範例**
+
+**1. 基本使用（Vanilla JS）**
+
+```javascript
+// main.js
+import { tracker } from './tracker';
+
+// 追蹤按鈕點擊
+document.getElementById('exportBtn').addEventListener('click', () => {
+  tracker.trackClick('btn_export_report', {
+    featureName: 'export_report_button',
+    featureType: 'button',
+    metadata: {
+      button_text: '匯出報表',
+      position: 'top_right',
+    },
+  });
+});
+
+// 登入後設定使用者 ID
+function onUserLogin(userId) {
+  tracker.setUserId(userId);
+}
+
+// 設定 A/B 測試分組
+tracker.setExperiments({
+  exp_new_onboarding: 'variant_B',
+  exp_pricing_layout: 'control',
+});
+```
+
+**2. React 整合**
+
+```typescript
+// useTracker.ts
+import { useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
+import { tracker } from './tracker';
+
+export function usePageTracking() {
+  const location = useLocation();
+  const prevLocationRef = useRef(location.pathname);
+
+  useEffect(() => {
+    if (prevLocationRef.current !== location.pathname) {
+      tracker.trackPageView();
+      prevLocationRef.current = location.pathname;
+    }
+  }, [location]);
+}
+
+// TrackingProvider.tsx
+import { ReactNode } from 'react';
+import { usePageTracking } from './useTracker';
+
+export function TrackingProvider({ children }: { children: ReactNode }) {
+  usePageTracking();
+  return <>{children}</>;
+}
+
+// App.tsx
+function App() {
+  return (
+    <TrackingProvider>
+      {/* 你的應用 */}
+    </TrackingProvider>
+  );
+}
+
+// 組件中使用
+function Dashboard() {
+  const handleExport = () => {
+    tracker.trackClick('btn_export_report', {
+      metadata: { report_type: 'monthly', format: 'pdf' },
+    });
+    exportReport();
+  };
+
+  return (
+    <div data-page-name="dashboard_overview">
+      <button onClick={handleExport}>匯出報表</button>
+    </div>
+  );
+}
+```
+
+**3. Vue 整合**
+
+```typescript
+// plugins/tracker.ts
+import { App } from 'vue';
+import { tracker } from './tracker';
+
+export default {
+  install(app: App) {
+    app.config.globalProperties.$tracker = tracker;
+
+    const router = app.config.globalProperties.$router;
+    if (router) {
+      router.afterEach(() => {
+        tracker.trackPageView();
+      });
+    }
+  },
+};
+
+// main.ts
+import { createApp } from 'vue';
+import trackerPlugin from './plugins/tracker';
+
+const app = createApp(App);
+app.use(trackerPlugin);
+
+// 組件中使用
+export default {
+  methods: {
+    handleClick() {
+      this.$tracker.trackClick('btn_export', {
+        metadata: { position: 'header' }
+      });
+    }
+  }
+}
+```
+
+**4. HTML data-* 屬性自動追蹤（選配）**
+
+```javascript
+// auto-track.js
+import { tracker } from './tracker';
+
+document.addEventListener('click', (e) => {
+  const target = e.target.closest('[data-track]');
+  if (!target) return;
+
+  const featureId = target.dataset.track;
+  const featureName = target.dataset.trackName;
+  const featureType = target.dataset.trackType || 'button';
+
+  tracker.trackClick(featureId, {
+    featureName,
+    featureType,
+    metadata: {
+      text: target.textContent?.trim(),
+    },
+  });
+});
+```
+
+```html
+<!-- HTML 使用 -->
+<button
+  data-track="btn_export_report"
+  data-track-name="export_report_button"
+  data-track-type="button"
+>
+  匯出報表
+</button>
+```
+
+**SDK 優勢**
+
+1. **簡單易用**：一行代碼追蹤事件
+2. **自動處理**：身份識別、環境資訊自動填入
+3. **TypeScript 支援**：完整的型別定義
+4. **框架無關**：可用於任何前端框架
+5. **可靠性**：使用 `sendBeacon` 確保資料送達
+6. **除錯友善**：debug 模式可查看所有事件
+
+**初始化配置選項**
+
+```typescript
+const tracker = new EventTracker({
+  apiEndpoint: 'https://api.example.com/api/v1/track/event', // API 端點
+  userId: 'u_123456',                // 使用者 ID（可選）
+  debug: true,                        // 除錯模式
+  autoTrackPageView: true,            // 自動追蹤頁面瀏覽
+  autoTrackPageLeave: true,           // 自動追蹤頁面離開
+});
+```
+
 ---
 
 若你接下來需要，我可以基於這份規格，再幫你產出：

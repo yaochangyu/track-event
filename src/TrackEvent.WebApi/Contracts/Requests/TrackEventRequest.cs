@@ -7,6 +7,10 @@ namespace TrackEvent.WebApi.Contracts.Requests;
 /// </summary>
 public record TrackEventRequest
 {
+    // ===== 系統識別（多產品） =====
+    [JsonPropertyName("product_id")]
+    public string ProductId { get; init; } = string.Empty;
+
     // ===== 身份識別 =====
     [JsonPropertyName("user_id")]
     public string? UserId { get; init; }

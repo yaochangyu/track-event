@@ -10,6 +10,12 @@ public class UserEvent
     /// </summary>
     public string EventId { get; set; } = string.Empty;
 
+    // ===== 系統識別（多產品） =====
+    /// <summary>
+    /// 產品/系統識別碼 (多產品用，必填)
+    /// </summary>
+    public string ProductId { get; set; } = string.Empty;
+
     // ===== 身份識別 =====
     /// <summary>
     /// 已登入用戶 ID

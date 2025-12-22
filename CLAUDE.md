@@ -174,6 +174,16 @@ Elasticsearch Index：`user-events-*`（按日期輪轉）
     - 建議有：`user_id`、`client_id`、`session_id`
     - 若曾匿名，`anonymous_id` 保留以便行為串接。
 
+`session_id` 在 Client 端產生建議：
+
+- Web：
+  - 建議用 `sessionStorage` 保存（Tab-scoped；關閉分頁即結束 session）。
+  - 建議用 UUID 產生（`crypto.randomUUID()`），避免用時間戳 + `Math.random()` 當唯一性來源。
+  - 建議加入「閒置超時換新」（例如 30 分鐘未送事件就換一個新的 `session_id`），避免一個分頁掛著太久把多段行為混成同一個 session。
+- App：
+  - 建議保存於本機持久化儲存（Keychain/Keystore/Preferences）。
+  - 建議在「回到前景前已在背景超過閾值」（例如 30 分鐘）或「登出」時換新 `session_id`。
+
 ---
 
 #### 2.3.2 事件核心資訊（Event Core）
@@ -1354,7 +1364,20 @@ class PageDurationTracker {
 
   getSessionId() {
     // 從 sessionStorage 取得
-    return sessionStorage.getItem('session_id') || this.generateSessionId();
+    const sessionIdKey = 'session_id';
+    const lastSeenKey = 'session_last_seen_at';
+    const idleTimeoutMs = 30 * 60 * 1000; // 30 分鐘
+    const now = Date.now();
+
+    const sessionId = sessionStorage.getItem(sessionIdKey);
+    const lastSeen = Number(sessionStorage.getItem(lastSeenKey) || '0');
+
+    if (!sessionId || !lastSeen || (now - lastSeen) > idleTimeoutMs) {
+      return this.generateSessionId();
+    }
+
+    sessionStorage.setItem(lastSeenKey, String(now));
+    return sessionId;
   }
 
   getPageName() {
@@ -1370,8 +1393,16 @@ class PageDurationTracker {
   }
 
   generateSessionId() {
-    const id = 's_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-    sessionStorage.setItem('session_id', id);
+    const sessionIdKey = 'session_id';
+    const lastSeenKey = 'session_last_seen_at';
+
+    const uuid = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+      ? globalThis.crypto.randomUUID()
+      : (Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10));
+
+    const id = 's_' + uuid;
+    sessionStorage.setItem(sessionIdKey, id);
+    sessionStorage.setItem(lastSeenKey, String(Date.now()));
     return id;
   }
 }
@@ -1715,15 +1746,27 @@ class EventTracker {
   }
 
   private getOrCreateSessionId(): string {
-    let sessionId = sessionStorage.getItem('_tracker_session_id');
-    if (!sessionId) {
-      sessionId = 's_' + Date.now() + '_' + this.generateId();
-      sessionStorage.setItem('_tracker_session_id', sessionId);
+    const sessionIdKey = '_tracker_session_id';
+    const lastSeenKey = '_tracker_session_last_seen_at';
+    const idleTimeoutMs = 30 * 60 * 1000; // 30 分鐘
+
+    const now = Date.now();
+    const lastSeen = Number(sessionStorage.getItem(lastSeenKey) || '0');
+    let sessionId = sessionStorage.getItem(sessionIdKey);
+
+    if (!sessionId || !lastSeen || (now - lastSeen) > idleTimeoutMs) {
+      sessionId = 's_' + this.generateId();
+      sessionStorage.setItem(sessionIdKey, sessionId);
     }
+
+    sessionStorage.setItem(lastSeenKey, String(now));
     return sessionId;
   }
 
   private generateId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
     return Math.random().toString(36).substr(2, 9);
   }
 

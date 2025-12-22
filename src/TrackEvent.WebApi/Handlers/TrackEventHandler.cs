@@ -52,6 +52,7 @@ public class TrackEventHandler
             var userEvent = new UserEvent
             {
                 EventId = eventId,
+                ProductId = request.ProductId,
                 UserId = request.UserId,
                 AnonymousId = request.AnonymousId,
                 ClientId = request.ClientId,
@@ -114,6 +115,9 @@ public class TrackEventHandler
 
     private Result<bool> ValidateRequest(TrackEventRequest request)
     {
+        if (string.IsNullOrWhiteSpace(request.ProductId))
+            return Result<bool>.Failure(new ValidationError("product_id", "missing"));
+
         if (string.IsNullOrWhiteSpace(request.ClientId))
             return Result<bool>.Failure(new ValidationError("client_id", "missing"));
 
